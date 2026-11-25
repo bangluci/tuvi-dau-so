@@ -4,8 +4,9 @@
  *   data: {"delta":{"text":"..."}}\n\n  ...  data: [DONE]\n\n
  * đúng định dạng mà components/InsightPanel.tsx đang đọc.
  *
- * Biến môi trường:
- *   DEEPSEEK_API_KEY  (bắt buộc)  — hoặc AI_API_KEY
+ * Biến môi trường (chọn MỘT nhà cung cấp):
+ *   ANTHROPIC_API_KEY — dùng Claude (ưu tiên nếu có). Model: ANTHROPIC_MODEL, mặc định claude-haiku-5-5
+ *   DEEPSEEK_API_KEY  — dùng DeepSeek (hoặc AI_API_KEY cho API tương thích OpenAI khác)
  *   AI_BASE_URL       (tuỳ chọn)  mặc định https://api.deepseek.com
  *   AI_MODEL          (tuỳ chọn)  mặc định deepseek-chat
  *   DAILY_LIMIT       (tuỳ chọn)  số lượt hỏi / IP / ngày, mặc định 40
@@ -71,51 +72,11 @@ function sseText(text: string, status = 200) {
   return new Response(body, { status, headers: { 'Content-Type': 'text/event-stream; charset=utf-8' } });
 }
 
-export async function POST(req: Request) {
-  const key = process.env.DEEPSEEK_API_KEY || process.env.AI_API_KEY;
-  if (!key) return sseText('Máy chủ chưa cấu hình API key cho AI (DEEPSEEK_API_KEY).');
-
-  const ip = (req.headers.get('x-forwarded-for') || '').split(',')[0].trim() || 'unknown';
-  if (!allow(ip)) return sseText('Bạn đã dùng hết lượt hỏi AI hôm nay. Hãy quay lại vào ngày mai nhé.');
-
-  let chart: ZiweiChart; let messages: { role: 'user' | 'assistant'; content: string }[];
-  try {
-    const body = await req.json();
-    chart = body.chart; messages = body.messages;
-    if (!chart?.palaces || !Array.isArray(messages) || !messages.length) throw new Error();
-  } catch { return new Response('Bad request', { status: 400 }); }
-
-  // Giữ hội thoại gọn: tối đa 12 tin gần nhất, mỗi tin tối đa 4000 ký tự
-  const history = messages.slice(-12).map(m => ({
-    role: m.role === 'assistant' ? 'assistant' as const : 'user' as const,
-    content: String(m.content || '').slice(0, 4000),
-  }));
-
-  const base = (process.env.AI_BASE_URL || 'https://api.deepseek.com').replace(/\/+$/, '');
-  const upstream = await fetch(`${base}/chat/completions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model: process.env.AI_MODEL || 'deepseek-chat',
-      stream: true,
-      temperature: 0.7,
-      max_tokens: 1500,
-      messages: [
-        { role: 'system', content: SYSTEM + '\n\nLÁ SỐ CỦA NGƯỜI XEM:\n' + summarize(chart) },
-        ...history,
-      ],
-    }),
-  }).catch(() => null);
-
-  if (!upstream || !upstream.ok || !upstream.body) {
-    const detail = upstream ? `${upstream.status}` : 'không kết nối được';
-    return sseText(`AI đang lỗi (${detail}). Vui lòng thử lại sau.`);
-  }
-
+function sseStream(upstream: Response, pick: (obj: any) => string | undefined) {
   const enc = new TextEncoder();
   const dec = new TextDecoder();
-  const reader = upstream.body.getReader();
-  const stream = new ReadableStream({
+  const reader = upstream.body!.getReader();
+  return new ReadableStream({
     async start(ctl) {
       let buf = '';
       try {
@@ -129,10 +90,10 @@ export async function POST(req: Request) {
             const t = line.trim();
             if (!t.startsWith('data:')) continue;
             const data = t.slice(5).trim();
-            if (data === '[DONE]') continue;
+            if (!data || data === '[DONE]') continue;
             try {
-              const delta = JSON.parse(data).choices?.[0]?.delta?.content;
-              if (delta) ctl.enqueue(enc.encode(`data: ${JSON.stringify({ delta: { text: delta } })}\n\n`));
+              const text = pick(JSON.parse(data));
+              if (text) ctl.enqueue(enc.encode(`data: ${JSON.stringify({ delta: { text } })}\n\n`));
             } catch { /* bỏ qua dòng lỗi */ }
           }
         }
@@ -142,7 +103,70 @@ export async function POST(req: Request) {
       }
     },
   });
-  return new Response(stream, {
+}
+
+export async function POST(req: Request) {
+  const claudeKey = process.env.ANTHROPIC_API_KEY;
+  const oaiKey = process.env.DEEPSEEK_API_KEY || process.env.AI_API_KEY;
+  if (!claudeKey && !oaiKey) return sseText('Máy chủ chưa cấu hình API key cho AI (ANTHROPIC_API_KEY hoặc DEEPSEEK_API_KEY).');
+
+  const ip = (req.headers.get('x-forwarded-for') || '').split(',')[0].trim() || 'unknown';
+  if (!allow(ip)) return sseText('Bạn đã dùng hết lượt hỏi AI hôm nay. Hãy quay lại vào ngày mai nhé.');
+
+  let chart: ZiweiChart; let messages: { role: 'user' | 'assistant'; content: string }[];
+  try {
+    const body = await req.json();
+    chart = body.chart; messages = body.messages;
+    if (!chart?.palaces || !Array.isArray(messages) || !messages.length) throw new Error();
+  } catch { return new Response('Bad request', { status: 400 }); }
+
+  // Giữ hội thoại gọn: tối đa 12 tin gần nhất, mỗi tin tối đa 4000 ký tự; phải bắt đầu bằng user
+  let history = messages.slice(-12).map(m => ({
+    role: m.role === 'assistant' ? 'assistant' as const : 'user' as const,
+    content: String(m.content || '').slice(0, 4000),
+  })).filter(m => m.content);
+  while (history.length && history[0].role !== 'user') history = history.slice(1);
+  if (!history.length) return new Response('Bad request', { status: 400 });
+
+  const system = SYSTEM + '\n\nLÁ SỐ CỦA NGƯỜI XEM:\n' + summarize(chart);
+  let upstream: Response | null;
+  let pick: (obj: any) => string | undefined;
+
+  if (claudeKey) {
+    upstream = await fetch(`${(process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com').replace(/\/+$/, '')}/v1/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-api-key': claudeKey, 'anthropic-version': '2023-06-01' },
+      body: JSON.stringify({
+        model: process.env.ANTHROPIC_MODEL || 'claude-haiku-5-5',
+        max_tokens: 1500,
+        stream: true,
+        system,
+        messages: history,
+      }),
+    }).catch(() => null);
+    pick = o => (o.type === 'content_block_delta' && o.delta?.type === 'text_delta') ? o.delta.text : undefined;
+  } else {
+    const base = (process.env.AI_BASE_URL || 'https://api.deepseek.com').replace(/\/+$/, '');
+    upstream = await fetch(`${base}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${oaiKey}` },
+      body: JSON.stringify({
+        model: process.env.AI_MODEL || 'deepseek-chat',
+        stream: true,
+        temperature: 0.7,
+        max_tokens: 1500,
+        messages: [{ role: 'system', content: system }, ...history],
+      }),
+    }).catch(() => null);
+    pick = o => o.choices?.[0]?.delta?.content;
+  }
+
+  if (!upstream || !upstream.ok || !upstream.body) {
+    const detail = upstream ? `${upstream.status}` : 'không kết nối được';
+    return sseText(`AI đang lỗi (${detail}). Vui lòng thử lại sau.`);
+  }
+
+  return new Response(sseStream(upstream, pick), {
     headers: { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache' },
   });
 }
