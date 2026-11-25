@@ -80,7 +80,7 @@ function sseStream(upstream: Response, pick: (obj: any) => string | undefined) {
   return new ReadableStream({
     async start(ctl) {
       const send = (text: string) => ctl.enqueue(enc.encode(`data: ${JSON.stringify({ delta: { text } })}\n\n`));
-      let buf = '', sent = 0, raw = '', errMsg = '';
+      let buf = '', sent = 0, raw = '', errMsg = '', stop = '', blocks = '';
       const handle = (line: string) => {
         const t = line.trim();
         if (!t.startsWith('data:')) return;
@@ -89,6 +89,8 @@ function sseStream(upstream: Response, pick: (obj: any) => string | undefined) {
         try {
           const obj = JSON.parse(data);
           if (obj?.type === 'error' || obj?.error) errMsg = String(obj.error?.message || obj.error?.type || 'lỗi không rõ');
+          if (obj?.type === 'content_block_start') blocks += (obj.content_block?.type || '?') + ' ';
+          if (obj?.type === 'message_delta' && obj.delta?.stop_reason) stop = obj.delta.stop_reason;
           const text = pick(obj);
           if (text) { send(text); sent += text.length; }
         } catch { /* bỏ qua dòng lỗi */ }
@@ -111,7 +113,7 @@ function sseStream(upstream: Response, pick: (obj: any) => string | undefined) {
         if (errMsg) send(`${sent ? '\n\n' : ''}AI đang lỗi (${redact(errMsg).slice(0, 200)}). Vui lòng thử lại sau.`);
         else if (!sent) {
           console.error('[interpret] empty stream', raw.slice(0, 600));
-          send(`AI không trả về nội dung. Phản hồi thô: ${redact(raw).slice(0, 300) || '(trống)'}`);
+          send(`AI không trả về nội dung (lý do dừng: ${stop || '?'}; khối: ${blocks.trim() || 'không có'}).`);
         }
         ctl.enqueue(enc.encode('data: [DONE]\n\n'));
         ctl.close();
@@ -156,7 +158,7 @@ export async function POST(req: Request) {
       headers: { 'Content-Type': 'application/json', 'x-api-key': claudeKey, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
         model: process.env.ANTHROPIC_MODEL || 'claude-haiku-5-5',
-        max_tokens: 1500,
+        max_tokens: 6000,
         stream: true,
         system,
         messages: history,
