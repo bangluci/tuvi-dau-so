@@ -5,11 +5,11 @@
  * đúng định dạng mà components/InsightPanel.tsx đang đọc.
  *
  * Biến môi trường (chọn MỘT nhà cung cấp):
- *   ANTHROPIC_API_KEY — dùng Claude (ưu tiên nếu có). Model: ANTHROPIC_MODEL, mặc định claude-haiku-5-5
+ *   ANTHROPIC_API_KEY — dùng Claude (ưu tiên nếu có). Model: ANTHROPIC_MODEL, mặc định claude-sonnet-5-5
  *   DEEPSEEK_API_KEY  — dùng DeepSeek (hoặc AI_API_KEY cho API tương thích OpenAI khác)
  *   AI_BASE_URL       (tuỳ chọn)  mặc định https://api.deepseek.com
  *   AI_MODEL          (tuỳ chọn)  mặc định deepseek-chat
- *   DAILY_LIMIT       (tuỳ chọn)  số lượt hỏi / IP / ngày, mặc định 40
+ *   DAILY_LIMIT       (tuỳ chọn)  số lượt hỏi / IP / ngày, mặc định 20
  */
 import type { ZiweiChart } from '@/lib/ziwei/types';
 
@@ -22,7 +22,7 @@ const ZHI = '子丑寅卯辰巳午未申酉戌亥';
 // ── Giới hạn lượt theo IP (bộ nhớ trong từng instance; đủ chặn spam cơ bản) ──
 const hits = new Map<string, { day: string; n: number }>();
 function allow(ip: string): boolean {
-  const limit = Number(process.env.DAILY_LIMIT || 40);
+  const limit = Number(process.env.DAILY_LIMIT || 20);
   const day = new Date().toISOString().slice(0, 10);
   const h = hits.get(ip);
   if (!h || h.day !== day) { hits.set(ip, { day, n: 1 }); return true; }
@@ -157,7 +157,7 @@ export async function POST(req: Request) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-api-key': claudeKey, 'anthropic-version': '2023-06-01' },
       body: JSON.stringify({
-        model: process.env.ANTHROPIC_MODEL || 'claude-haiku-5-5',
+        model: process.env.ANTHROPIC_MODEL || 'claude-sonnet-5-5',
         max_tokens: 6000,
         stream: true,
         system,
