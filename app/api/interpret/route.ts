@@ -76,28 +76,43 @@ function sseStream(upstream: Response, pick: (obj: any) => string | undefined) {
   const enc = new TextEncoder();
   const dec = new TextDecoder();
   const reader = upstream.body!.getReader();
+  const redact = (t: string) => t.replace(/sk-[A-Za-z0-9_\-]+/g, 'sk-***');
   return new ReadableStream({
     async start(ctl) {
-      let buf = '';
+      const send = (text: string) => ctl.enqueue(enc.encode(`data: ${JSON.stringify({ delta: { text } })}\n\n`));
+      let buf = '', sent = 0, raw = '', errMsg = '';
+      const handle = (line: string) => {
+        const t = line.trim();
+        if (!t.startsWith('data:')) return;
+        const data = t.slice(5).trim();
+        if (!data || data === '[DONE]') return;
+        try {
+          const obj = JSON.parse(data);
+          if (obj?.type === 'error' || obj?.error) errMsg = String(obj.error?.message || obj.error?.type || 'lỗi không rõ');
+          const text = pick(obj);
+          if (text) { send(text); sent += text.length; }
+        } catch { /* bỏ qua dòng lỗi */ }
+      };
       try {
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
-          buf += dec.decode(value, { stream: true });
+          const chunk = dec.decode(value, { stream: true });
+          if (raw.length < 600) raw += chunk;
+          buf += chunk;
           const lines = buf.split('\n');
           buf = lines.pop() || '';
-          for (const line of lines) {
-            const t = line.trim();
-            if (!t.startsWith('data:')) continue;
-            const data = t.slice(5).trim();
-            if (!data || data === '[DONE]') continue;
-            try {
-              const text = pick(JSON.parse(data));
-              if (text) ctl.enqueue(enc.encode(`data: ${JSON.stringify({ delta: { text } })}\n\n`));
-            } catch { /* bỏ qua dòng lỗi */ }
-          }
+          for (const line of lines) handle(line);
         }
+        if (buf) handle(buf);
+      } catch (e: any) {
+        errMsg = errMsg || String(e?.message || e);
       } finally {
+        if (errMsg) send(`${sent ? '\n\n' : ''}AI đang lỗi (${redact(errMsg).slice(0, 200)}). Vui lòng thử lại sau.`);
+        else if (!sent) {
+          console.error('[interpret] empty stream', raw.slice(0, 600));
+          send(`AI không trả về nội dung. Phản hồi thô: ${redact(raw).slice(0, 300) || '(trống)'}`);
+        }
         ctl.enqueue(enc.encode('data: [DONE]\n\n'));
         ctl.close();
       }
