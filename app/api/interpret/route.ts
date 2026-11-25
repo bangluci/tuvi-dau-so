@@ -106,8 +106,11 @@ function sseStream(upstream: Response, pick: (obj: any) => string | undefined) {
 }
 
 export async function POST(req: Request) {
-  const claudeKey = process.env.ANTHROPIC_API_KEY;
-  const oaiKey = process.env.DEEPSEEK_API_KEY || process.env.AI_API_KEY;
+  // Cắt khoảng trắng/xuống dòng thừa khi dán key
+  const clean = (v?: string) => (v || '').replace(/\s+/g, '').replace(/^["']|["']$/g, '') || undefined;
+  const claudeKey = clean(process.env.ANTHROPIC_API_KEY);
+  const oaiKey = clean(process.env.DEEPSEEK_API_KEY || process.env.AI_API_KEY);
+  let netErr = '';
   if (!claudeKey && !oaiKey) return sseText('Máy chủ chưa cấu hình API key cho AI (ANTHROPIC_API_KEY hoặc DEEPSEEK_API_KEY).');
 
   const ip = (req.headers.get('x-forwarded-for') || '').split(',')[0].trim() || 'unknown';
@@ -143,7 +146,7 @@ export async function POST(req: Request) {
         system,
         messages: history,
       }),
-    }).catch(() => null);
+    }).catch((e) => { netErr = String(e?.cause?.message || e?.message || e); return null; });
     pick = o => (o.type === 'content_block_delta' && o.delta?.type === 'text_delta') ? o.delta.text : undefined;
   } else {
     const base = (process.env.AI_BASE_URL || 'https://api.deepseek.com').replace(/\/+$/, '');
@@ -157,12 +160,20 @@ export async function POST(req: Request) {
         max_tokens: 1500,
         messages: [{ role: 'system', content: system }, ...history],
       }),
-    }).catch(() => null);
+    }).catch((e) => { netErr = String(e?.cause?.message || e?.message || e); return null; });
     pick = o => o.choices?.[0]?.delta?.content;
   }
 
   if (!upstream || !upstream.ok || !upstream.body) {
-    const detail = upstream ? `${upstream.status}` : 'không kết nối được';
+    netErr = netErr.replace(/sk-[A-Za-z0-9_\-]+/g, 'sk-***').slice(0, 200); // không lộ key
+    let detail = upstream ? `HTTP ${upstream.status}` : `không kết nối được: ${netErr}`;
+    if (upstream) {
+      const body = await upstream.text().catch(() => '');
+      console.error('[interpret] upstream error', upstream.status, body.slice(0, 500));
+      try { const m = JSON.parse(body)?.error?.message; if (m) detail += ` — ${String(m).replace(/sk-[A-Za-z0-9_\-]+/g, 'sk-***').slice(0, 200)}`; } catch { /* bỏ qua */ }
+    } else {
+      console.error('[interpret] fetch failed', netErr);
+    }
     return sseText(`AI đang lỗi (${detail}). Vui lòng thử lại sau.`);
   }
 
