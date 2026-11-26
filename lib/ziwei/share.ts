@@ -1,3 +1,4 @@
+import { vnUtcOffsetMinutes } from './cities-vn';
 import type { BirthFormState } from '@/components/BirthForm';
 import type { BirthInfo } from './types';
 import { calculateTrueSolarTime, resolveZiweiDayOffset, shiftGregorianDate } from './true-solar-time';
@@ -15,6 +16,8 @@ export function formToTrueSolarTime(form: Pick<BirthFormState, 'year' | 'month' 
     clockHour: parseInt(form.clockHour) || 0,
     clockMinute: parseInt(form.clockMinute) || 0,
     longitude: form.province ? form.longitude : undefined,
+    // Giờ nhập là giờ Việt Nam (UTC+7); miền Nam 1960–1975 là UTC+8
+    utcOffsetMinutes: vnUtcOffsetMinutes(form.province, parseInt(form.year) || 0, parseInt(form.month) || 0, parseInt(form.day) || 0),
   });
 }
 
