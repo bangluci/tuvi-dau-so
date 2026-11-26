@@ -14,7 +14,7 @@
     '* 倪海厦批命用真太阳时，建议填写出生地以自动校正时辰': '* Người sinh ở Việt Nam: chọn "Trùng Khánh" rồi chọn quận có ghi chú tỉnh VN gần kinh độ nhất (Hà Nội → Đồng Nam, Thái Bình/Hải Phòng → Giang Tân, TP.HCM → Kỳ Giang).',
     '倪海厦批命用真太阳时，建议填写出生地以自动校正时辰': 'Người sinh ở Việt Nam: chọn "Trùng Khánh" rồi chọn quận có ghi chú tỉnh VN gần kinh độ nhất.',
     '省份 / 直辖市': 'Tỉnh / thành phố', '先选省份': 'Chọn tỉnh trước', '城市': 'Thành phố',
-    '出生时间（北京时间）': 'Giờ sinh (giờ Bắc Kinh = giờ Việt Nam + 1 tiếng)',
+    '出生时间（北京时间）': 'Giờ sinh (giờ Việt Nam)',
     '真太阳时 →': 'Giờ mặt trời thực →',
     '不知道出生时间，以子时（23:00–01:00）起盘': 'Không biết giờ sinh, lập lá số theo giờ Tý (23:00–01:00)',
     '时辰不详': 'Không rõ giờ',
