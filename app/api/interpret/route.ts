@@ -10,8 +10,13 @@
  *   AI_BASE_URL       (tuỳ chọn)  mặc định https://api.deepseek.com
  *   AI_MODEL          (tuỳ chọn)  mặc định deepseek-chat
  *   DAILY_LIMIT       (tuỳ chọn)  số lượt hỏi / IP / ngày, mặc định 10
+ *
+ * Nếu có database (xem lib/store.ts), mỗi lượt hỏi được lưu lại: thông tin lá số, câu hỏi, câu trả lời.
+ * Không lưu địa chỉ IP.
  */
+import { createHash } from 'node:crypto';
 import type { ZiweiChart } from '@/lib/ziwei/types';
+import { saveSession, type StoredMessage } from '@/lib/store';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -72,7 +77,7 @@ function sseText(text: string, status = 200) {
   return new Response(body, { status, headers: { 'Content-Type': 'text/event-stream; charset=utf-8' } });
 }
 
-function sseStream(upstream: Response, pick: (obj: any) => string | undefined) {
+function sseStream(upstream: Response, pick: (obj: any) => string | undefined, onDone?: (full: string) => Promise<void>) {
   const enc = new TextEncoder();
   const dec = new TextDecoder();
   const reader = upstream.body!.getReader();
@@ -80,7 +85,8 @@ function sseStream(upstream: Response, pick: (obj: any) => string | undefined) {
   return new ReadableStream({
     async start(ctl) {
       const send = (text: string) => ctl.enqueue(enc.encode(`data: ${JSON.stringify({ delta: { text } })}\n\n`));
-      let buf = '', sent = 0, raw = '', errMsg = '', stop = '', blocks = '';
+      let buf = '', sent = 0, raw = '', errMsg = '', stop = '', blocks = '', full = '';
+      const emit = (text: string) => { full += text; send(text); };
       const handle = (line: string) => {
         const t = line.trim();
         if (!t.startsWith('data:')) return;
@@ -92,7 +98,7 @@ function sseStream(upstream: Response, pick: (obj: any) => string | undefined) {
           if (obj?.type === 'content_block_start') blocks += (obj.content_block?.type || '?') + ' ';
           if (obj?.type === 'message_delta' && obj.delta?.stop_reason) stop = obj.delta.stop_reason;
           const text = pick(obj);
-          if (text) { send(text); sent += text.length; }
+          if (text) { emit(text); sent += text.length; }
         } catch { /* bỏ qua dòng lỗi */ }
       };
       try {
@@ -110,11 +116,13 @@ function sseStream(upstream: Response, pick: (obj: any) => string | undefined) {
       } catch (e: any) {
         errMsg = errMsg || String(e?.message || e);
       } finally {
-        if (errMsg) send(`${sent ? '\n\n' : ''}AI đang lỗi (${redact(errMsg).slice(0, 200)}). Vui lòng thử lại sau.`);
+        if (errMsg) emit(`${sent ? '\n\n' : ''}AI đang lỗi (${redact(errMsg).slice(0, 200)}). Vui lòng thử lại sau.`);
         else if (!sent) {
           console.error('[interpret] empty stream', raw.slice(0, 600));
-          send(`AI không trả về nội dung (lý do dừng: ${stop || '?'}; khối: ${blocks.trim() || 'không có'}).`);
+          emit(`AI không trả về nội dung (lý do dừng: ${stop || '?'}; khối: ${blocks.trim() || 'không có'}).`);
         }
+        // Lưu xong rồi mới đóng luồng, để hàm serverless không bị dừng giữa chừng
+        if (onDone) { try { await onDone(full); } catch { /* bỏ qua */ } }
         ctl.enqueue(enc.encode('data: [DONE]\n\n'));
         ctl.close();
       }
@@ -128,17 +136,45 @@ export async function POST(req: Request) {
   const claudeKey = clean(process.env.ANTHROPIC_API_KEY);
   const oaiKey = clean(process.env.DEEPSEEK_API_KEY || process.env.AI_API_KEY);
   let netErr = '';
-  if (!claudeKey && !oaiKey) return sseText('Máy chủ chưa cấu hình API key cho AI (ANTHROPIC_API_KEY hoặc DEEPSEEK_API_KEY).');
-
-  const ip = (req.headers.get('x-forwarded-for') || '').split(',')[0].trim() || 'unknown';
-  if (!allow(ip)) return sseText('Bạn đã dùng hết lượt hỏi AI hôm nay. Hãy quay lại vào ngày mai nhé.');
-
-  let chart: ZiweiChart; let messages: { role: 'user' | 'assistant'; content: string }[];
+  let chart: ZiweiChart; let messages: StoredMessage[]; let sessionId = '';
   try {
     const body = await req.json();
-    chart = body.chart; messages = body.messages;
-    if (!chart?.palaces || !Array.isArray(messages) || !messages.length) throw new Error();
+    chart = body.chart; messages = body.messages; sessionId = String(body.sessionId || '');
+    if (!chart?.palaces || !chart?.birthInfo || !Array.isArray(messages) || !messages.length) throw new Error();
   } catch { return new Response('Bad request', { status: 400 }); }
+
+  // Ghi lại phiên: thông tin lá số + toàn bộ hỏi đáp tới lúc này + câu trả lời mới
+  const b = chart.birthInfo;
+  if (!/^[A-Za-z0-9_-]{8,64}$/.test(sessionId)) {
+    sessionId = createHash('sha256')
+      .update([b.year, b.month, b.day, b.hour, b.gender, b.name || '', new Date().toISOString().slice(0, 10)].join('|'))
+      .digest('hex').slice(0, 32);
+  }
+  const text = (v: unknown, max: number) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : undefined);
+  const record = (answer: string) => saveSession({
+    id: sessionId,
+    birth: {
+      year: Number(b.year) || 0, month: Number(b.month) || 0, day: Number(b.day) || 0, hour: Number(b.hour) || 0,
+      gender: b.gender === 'female' ? 'female' : 'male',
+      name: text(b.name, 80), province: text(b.province, 60), city: text(b.city, 60),
+    },
+    chart: {
+      mingBranch: Number(chart.mingGongBranch) || 0,
+      mingStars: (chart.palaces.find(p => p.isMingGong)?.stars || []).filter(x => x.type === 'major').map(x => String(x.name)).slice(0, 4),
+      ju: String(chart.wuxingJuName || '').slice(0, 12),
+    },
+    messages: [
+      ...messages.filter(m => m && (m.role === 'user' || m.role === 'assistant') && m.content)
+        .map(m => ({ role: m.role, content: String(m.content), hidden: m.hidden === true })),
+      { role: 'assistant' as const, content: answer },
+    ],
+  });
+  const reply = async (msg: string) => { await record(msg); return sseText(msg); };
+
+  if (!claudeKey && !oaiKey) return reply('Máy chủ chưa cấu hình API key cho AI (ANTHROPIC_API_KEY hoặc DEEPSEEK_API_KEY).');
+
+  const ip = (req.headers.get('x-forwarded-for') || '').split(',')[0].trim() || 'unknown';
+  if (!allow(ip)) return reply('Bạn đã dùng hết lượt hỏi AI hôm nay. Hãy quay lại vào ngày mai nhé.');
 
   // Giữ hội thoại gọn: tối đa 12 tin gần nhất, mỗi tin tối đa 4000 ký tự; phải bắt đầu bằng user
   let history = messages.slice(-12).map(m => ({
@@ -199,10 +235,10 @@ export async function POST(req: Request) {
     } else {
       console.error('[interpret] fetch failed', netErr);
     }
-    return sseText(`AI đang lỗi (${detail}). Vui lòng thử lại sau.`);
+    return reply(`AI đang lỗi (${detail}). Vui lòng thử lại sau.`);
   }
 
-  return new Response(sseStream(upstream, pick), {
+  return new Response(sseStream(upstream, pick, record), {
     headers: { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache' },
   });
 }
