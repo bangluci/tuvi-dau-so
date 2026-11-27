@@ -31,6 +31,9 @@ export default function ChartApp() {
           （本页为引擎 Demo，完整商业版界面不在开源范围；排盘内核完全开放。）
         </p>
         <BirthForm onSubmit={(info: BirthInfo) => setChart(generateChart(info))} />
+        <p style={{ color: '#7f8aa8', marginTop: 16, fontSize: 12, lineHeight: 1.6, textAlign: 'center' }}>
+          Thông tin bạn nhập và nội dung hỏi đáp với AI được lưu lại để thống kê và cải thiện dịch vụ.
+        </p>
       </main>
     );
   }
