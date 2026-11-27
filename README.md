@@ -5,21 +5,23 @@ Web lập lá số Tử Vi Đẩu Số theo hệ phái Nghê Hải Hạ, giao di
 Dựa trên engine mã nguồn mở [Renhuai123/ziwei-doushu](https://github.com/Renhuai123/ziwei-doushu) (MIT). Phần thêm vào:
 
 - `public/vi.js` — dịch giao diện sang tiếng Việt (tên cung, sao, Tứ Hóa, form…)
-- `app/api/interpret/route.ts` — AI giải đoán qua DeepSeek (API tương thích OpenAI), có giới hạn lượt theo IP
+- `app/api/interpret/route.ts` — AI giải đoán qua **Claude** (`ANTHROPIC_API_KEY`) hoặc **DeepSeek** (`DEEPSEEK_API_KEY`), có giới hạn lượt theo IP
 - Trang chủ `/` là trang lập lá số
+- `lib/store.ts` + `/admin` — lưu thông tin lá số và hỏi đáp với AI (không lưu IP), xem ở trang quản trị có mật khẩu.
+  Cần database Redis của Upstash (Vercel → Storage, tự thêm `KV_REST_API_URL`, `KV_REST_API_TOKEN`) và biến `ADMIN_KEY` (≥ 8 ký tự)
 
 ## Chạy local
 
 ```bash
 npm ci
-cp .env.example .env.local   # điền DEEPSEEK_API_KEY
+cp .env.example .env.local   # điền ANTHROPIC_API_KEY hoặc DEEPSEEK_API_KEY
 npm run dev                  # http://localhost:3000
 ```
 
 ## Deploy lên Vercel
 
 1. Import repo này vào Vercel (framework: Next.js, giữ mặc định).
-2. Settings → Environment Variables: thêm `DEEPSEEK_API_KEY`.
+2. Settings → Environment Variables: thêm `ANTHROPIC_API_KEY` (Claude) hoặc `DEEPSEEK_API_KEY`.
 3. Deploy.
 
 Lưu ý: giờ sinh nhập theo **giờ Bắc Kinh = giờ Việt Nam + 1 tiếng**; người sinh ở Việt Nam chọn nơi sinh "Trùng Khánh" và quận có ghi chú kinh độ gần nhất.
